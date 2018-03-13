@@ -1,0 +1,612 @@
+---
+title: "Yewno Assignment"
+author: "Harsh Vardhan Tiwari"
+date: "3/11/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Question 1
+
+Predicting Initial Claims of Unemployment using Google correlate
+
+The Initial Claims data describes the number of people who filed for unemployment benefits in the previous week and is released every Thursday for the week ending Saturday. The data is seen as a good leading indicator for the health of the US job market and the economy in general. This data also plays an important role in setting the inflation expectations and is therefore a key macroeconomic indicator in the financial markets. The 5-day lag in the release makes accurate prediction of this very valuable to portfolio managers and traders. 
+
+Most commonly used approaches of using alternative datasets for predicting macroeconomic trends like Initial Claims start with a baseline time series model like Autoregressive models, but these models work well only during trends and fail to identify turning points (or changes in trend regimes) leading to poor generalization capabilites. Some recent approaches have tried to add to the predictive power of the classic AR model by adding features from these alternative datasets. Google trends is a very commonly used data source for this purpose. Google trends provides a time series index of the volume of queries corresponding to a tag under a certain category users enter into Google in a given geographic area. When using Google trends, we need to identity the tags which might relate the most to our time series of interests, while this is very useful this process can be very cumbersome and tricky as a certain tag can be used in different contexts and there might be many alternative search tags relating to a certain topic. Most commonly used tags for someone unemployed could be "unemployed, "how to find a job" and a quick search for "unemployed" tag gives the following result, which tends to make sense highlighting the high unemployment rates during the financial crisis of 2008.
+
+![Google Trend search for tag 'unemployed'](/Users/Harsh/Documents/R/Yewno/Initial Claims Prediction/unemployed_google trends.png)
+
+I wanted to use a native approach that deviates from the standard AR modelling framework offering the potential of stronger out-sample predictive power and also solves the problem of hand-picking features in the beginning. Google Correlate comes to our rescue. Google correlate offers an API for uploading a weekly/monthly time series to find search patterns that correlate the most to a user entered time series. This solves the problem of handpicking a few search tags and provides us with carefully selected search tags that have high correlation to the time-series of our interest: Initial Claims. 
+
+Data Highlights
+1) Time Period: 02/22/2004 to 03/12/2017
+2) Feature Set: Top 100 most correlated search tags to Initial Claims weekly data are used as features, all having  correlation > 0.9. The time series for each search tag is scaled to have mean 0 and variance 1 by default from google correlate API
+
+```{r plot_features}
+library(ggplot2)
+myData <- read.csv(file="/Users/Harsh/Documents/R/Yewno/Initial Claims Prediction/google correlate-Initial_Claims.csv", header=TRUE, stringsAsFactors=FALSE,
+                   fileEncoding="latin1")
+myData $Date <- as.Date( myData$Date, '%m/%d/%y')
+ggplot( data = myData, aes( Date, Initial.Claims )) + geom_line()
+```
+
+## Linear Regression Model: Train Data
+
+We propose a multiple linear regression model using all the  to start with to start with. We are cognizant that having so many correlated features make our model prone to overfitting, so we will test our model both in-sample and out-sample. We have 682 rows in our dataset, we use a 50-50 split for training and test datasets.
+```{r, echo=TRUE}
+library(glmnet)
+## define predictor and independent variable
+x <- model.matrix(Initial.Claims ~ . - Date, myData)[,-1]
+y <- myData$Initial.Claims
+
+## set the seed to make your partition reproductible
+set.seed(123)
+
+## 50% of the sample size
+nRows <- nrow(myData)
+smp_size <- floor(0.50 * nRows)
+train <- sample(seq_len(nRows), size = smp_size)
+test <- -train
+
+## training set
+xtrain <- x[train,]
+ytrain <- y[train]
+## test set
+xtest <- x[test,]
+ytest <- y[test]
+```
+Model Statistics: In-Sample
+```{r}
+myData <- subset(myData, select = -Date)
+ols.model <- lm(Initial.Claims ~ ., data = myData, subset = train)
+summary(ols.model)
+```
+Model Interpretation and Analysis
+
+A quick note: In the search tags from google correlate above dots were actually spaces, so "i.need.a.job" is actually the search query "i need a job"
+
+We find a good fit achieving adjusted R-squared close to 0.9795. Considering that our universe of features is so big it only makes sense to separate the most important features. When we look for the most significant variables in our model, which correspond to the ones with the lowest p-values above and also highlighted with asterisk, we realize most of the tags really don't make a lot of sense intuitively. I looked into a couple of tags like ihiphop, dare4distance.lyrics and soon realized that they represent search patterns that peaked around 2008-2010 and dropped after. Given that Initial Claims are is range bound in general in this period apart from the peak during 2008-2010 period, it is no surprise that high correlation alone is not very useful. We need some manual filtering to narrow down to meaningful search tags from the rest. I tried running a linear regression with just one search tag that makes 100% sense: "i need a job".
+```{r}
+ols.model1 <- lm(Initial.Claims ~ i.need.a.job, data = myData, subset = train)
+summary(ols.model1)
+```
+We quickly realize that even this feature alone has an adjusted R-squared of 0.8161. We try adding some more features to get our adjusted R-squared closer to previous value of 0.9795. Lets try a few more hand picked features. In particular we pick search tags that directly imply unemployment like "i need a job", "georgia unemployment" and also that might be a consequence of unemployment like finding alternative sources of income like "craigslist helper" and modifying loan payment because of lack of income like "loan modification". Lets give these 4 features a shot.
+```{r}
+ols.model2 <- lm(Initial.Claims ~ i.need.a.job + georgia.unemployment + loan.modifications + craigslist.helper, data = myData, subset = train)
+summary(ols.model2)
+```
+With just 4 search tags "i need a job", "georgia unemployment", "craigslist helper" and "loan modification" we get an adjusted R-squared of 0.9467 and also have a lot more confidence in our selected search tags. Lets see use this as our model. We will first view some residual plots to verify our model fit. 
+```{r}
+plot(ols.model2)
+```
+
+
+
+Our residuals seem to satify the normality assumptions well. At this point we are fairly confident of our in-sample fit. Lets look at our out-sample fit, in particular we will use RMSE (root mean squared error) as a preferred metric here.
+```{r}
+# RMSE: training set 
+sqrt(mean((ols.model2$residuals)^2))
+```
+
+```{r}
+# RMSE: test set
+ols.predict.test <- predict(ols.model2, newdata = data.frame(x[test,]))
+sqrt(mean((y[test]-ols.predict.test)^2))
+```
+
+Our In-Sample and Out-Sample RMSE are very close, both around 20k. Given that only a random sample of 50% of all the data was used for developing the model and that it genealizes very well for the unobserved 50% of the data. We conclude this is our proposed model. Lastly lets see how our out-sample residuals look and if there are any signs of a bias in our prediction power. We plot true values against out-sample residuals to check for bias. 
+```{r}
+plot(y[test],ols.predict.test-y[test])
+```
+
+
+
+The residuals show no signs of bias, predicting true Initials Claims fairly well for low as well as high values. Our model can therefore be useful in predicting turning points as well.
+
+
+One key advantage of our model is that it is state independent i.e. does not use traditional time series framework of lag orders, instead sees the problem as a purely predictive learning model and our sampling framework verifies the robustness of our model to out-of-sample data. This model is particularly useful in developed countries like the United States where almost everyone has access to the internet and every answer is just a google search away. In developing countries this model would not be that accurate. 
+
+
+## Question 2
+Smart Beta Strategy
+
+Smart-beta strategies revolve around ideas of smarter asset allocation to beat a chosen benchmark. Most commonly used approaches involve the efficient market hypothesis and CAPM assumptions. Mean-Variance optimizations are used with the motivation of minimizing risk and maximing returns or equivalently maximising sharpe ratio. These Mean-Variance optimizations make assumptions of estimating risk/returns from purely historical price data. It is this assumption of Mean-Variance analysis that makes their effectiveness in real life relatively weak. These portfolios are still able to show outperformance to market capitalization or equally weighted indexes as various studies have show.
+
+In this analysis, I will move away from the common ideas of Mean-Variance analysis. I aim to use come up with a pure alpha model i.e. we only care about maximising returns. The motivation revolves around the idea of value investing. Most common approaches to smart beta strategies using fundamental data involve ranking stocks based on certain factors and selecting stocks that fall within the top quantiles based on one or more factor values, trying to capture relative value between different stocks and sectors. I wanted to come up with a more general stock specific model. In particular I wanted to see how much of an impact does quarterly earnings data release have on the next quarter performance of the stock price and how this can be used in coming up wiht a smart beta strategy. 
+
+Data: Commonly used Value, Growth and Efficiency Ratios. I used this research paper "CSFB Quantitative Research, Alpha Factor Framework by P. N. Patel, S. Yao, R. Carlson, A. Banerji, J. Handelman" to select factors driving growth, value and profitability. Further we used Intrinio Api to pull historical fundamental data for a stock.
+
+Problem: We attempt to solve a classification problem that tries to predict outperformance of stock price (or equivalently positive returns) in the next 3 months following the quarterly fundamental data release. The general idea is that the better our prediction accuracy is on a certain stock the more confident we are of its outperformance. This further can be used for stock selection or even rebalancing weights quarterly in a mean-variance analysis framework.
+
+
+
+```{r}
+library(httr)
+
+## function to pull historical fundamental stock data for a specified data range and frequency
+history <- function(ticker, item, start_date, end_date, frequency){
+  history_base <- "https://api.intrinio.com/historical_data?ticker=" 
+  username <- "541af5920e9416769122ddaefc2f8ec8"
+  password <- "10a220e8fb9b9ca41f8ec088b7762bdd"
+  
+  historical <- paste(history_base, ticker, "&item=", item, "&start_date=", start_date, "&end_date=", end_date, "&frequency=", frequency,sep="") 
+  tp <- GET(historical, authenticate(username, password, type = "basic")) 
+  z <- unlist(content(tp,"parsed"))
+  
+  n=length(z)
+  if((n-5)<=0) {
+    cat("n is",n,"\n")
+    return("n becomes -ve")
+  }
+  b=as.data.frame(matrix(z[1:(n-5)],(n-5)/2, byrow = T))
+  names(b)=names(z)[1:2]
+  return(b)
+}
+```
+We don't claim that there is a unique model predicting outperformance for all the stocks. In the interest of time, we will just try to model the outperformance of 1 stock, AAPL and we will also provide some ideas on how this analysis can be used for creating customized pure alpha indexes, as we believe that a full fledged Machine learning based index would require a more involved backtesting and a lot more data. 
+```{r}
+## chosen factors driving Value, Growth and Profitability
+factorList <- list(price=c("close_price","weightedavedilutedsharesos"),
+growth=c("ocfqoqgrowth","revenueqoqgrowth",
+"netincomeqoqgrowth","epsqoqgrowth","ebitdaqoqgrowth","ebitda",
+"bookvaluepershare"),
+profitability=c("nopatqoqgrowth","ebitdamargin",
+"nopatmargin","operatingmargin","opextorevenue","sgaextorevenue",
+"arturnover","invturnover"))
+
+## function to get chosen fundamental factors for a single stock
+getHistoricFactors <- function(ticker, factors, start_date, end_date, frequency){
+  result <- list()
+  for (name in names(factors)) {
+    cat("Getting factors for: ",name,"\n")
+    for (factor in factors[[name]]){  
+      historicalFactorData <- history(ticker,factor,start_date,end_date,frequency)  
+      result[[factor]] <- historicalFactorData
+    }
+  }  
+  return(result)
+}
+```
+
+Data: Quarterly fundamental data for AAPL from 2010-01-01 to 2018-01-01 (32 data points) including following fundamental factors as, 
+
+Growth Factors : "ocfqoqgrowth","revenueqoqgrowth",
+"netincomeqoqgrowth","epsqoqgrowth","ebitdaqoqgrowth","pricetoearnings","pricetobook"
+
+Profitability Factors: "nopatqoqgrowth","ebitdamargin",
+"nopatmargin","operatingmargin","opextorevenue","sgaextorevenue",
+"arturnover","invturnover"
+
+We load AAPL data already saved as a csv and also do some data cleaning next.
+```{r, echo = FALSE}
+library(dplyr)
+
+## calls to get the data: we don't use these here, as we are loading already saved data
+# AAPLData <- getHistoricFactors("AAPL",factorList,"2010-01-01","2018-01-01","quarterly")
+# write.csv(AAPLData, file = "AAPLFundamentals_updated.csv")
+
+## load already AAPL fundamnetal data saved in csv format
+AAPLRawData <- read.table("/Users/Harsh/Documents/R/Yewno/AAPLFundamentals_updated.csv", 
+                 header = TRUE, sep = ",", stringsAsFactors=FALSE)
+
+columnsToSubset <- c("close_price.data.date",
+                     trimws(paste(unlist(factorList),"data.value",sep = "."), which = c("both")))
+
+# removing extra columns
+AAPLModifiedData <- AAPLRawData[columnsToSubset]
+
+# sort in ascending order of dates     
+AAPLModifiedData <- AAPLModifiedData[with(AAPLModifiedData, order(close_price.data.date)), ]
+
+# convert characters to numeric
+colsToNumeric <- columnsToSubset[-c(1)]
+AAPLModifiedData[,colsToNumeric] = apply(AAPLModifiedData[,colsToNumeric], 2, function(x) as.numeric(x))
+
+AAPLModifiedData <- cbind(AAPLModifiedData,
+quarterlyReturn = 100*(lead(AAPLModifiedData$close_price.data.value,1) - AAPLModifiedData$close_price.data.value)/AAPLModifiedData$close_price.data.value,
+priceToEarnings = AAPLModifiedData$close_price.data.value/(AAPLModifiedData$ebitda.data.value/AAPLModifiedData$weightedavedilutedsharesos.data.value),
+priceToBook = AAPLModifiedData$close_price.data.value/AAPLModifiedData$bookvaluepershare.data.value)
+
+# remove NAs: the last row for quarterly earnings will be NA because we take leading differences   
+AAPLModifiedData <- AAPLModifiedData[complete.cases(AAPLModifiedData), ]
+
+```
+
+We start with splitting the data into train and test dataset, we use an 80%-20% split
+```{r}
+# training and test data
+set.seed(124)
+nRows <- nrow(AAPLModifiedData)
+smp_size <- floor(0.8 * nRows)
+train <- sample(seq_len(nRows), size = smp_size)
+test <- -train
+```
+
+We try out multiple linear regression model to forecast the returns first.
+```{r}
+## multiple linear regression
+AAPLData1 <- select(AAPLModifiedData,-close_price.data.date,-close_price.data.value,
+            -weightedavedilutedsharesos.data.value,-bookvaluepershare.data.value,-ebitda.data.value)
+
+
+regressionModel <- lm(quarterlyReturn ~ ., data = AAPLData1[train,])
+summary(regressionModel)
+```
+The regression model has an adjuted R squared of 0.2426 and also identified accounts receivables turnover being significant at 90% confidence level. 
+
+The fit doesn't seem statistically significant. Given our small dataset of just 32 data points this is not surprising. For us to come up with a regression model we'll surely need a lot more data. For our dataset where data frequency is quarterly this is clearly not a good approach. 
+
+Let's rephrase the problem to a classification problem instead, to classify returns being positive (denoted by 1's) or not. 
+
+We start with logistic regression model for classification. We also decide to use a 60-40% split as our dataset is quite small and such a split would ensure we have enough data points in the test set to see how well our model generalizes to unseen data. 
+```{r}    
+# creating varible for classification problem
+AAPLData2<- cbind(AAPLData1, 
+isReturnPositive = sapply(AAPLData1$quarterlyReturn, function(x) 
+  {if (x>0) return(1) else return(0)}))  
+
+AAPLData2 <- select(AAPLData2,-quarterlyReturn)
+
+set.seed(125)
+nRows <- nrow(AAPLModifiedData)
+smp_size <- floor(0.6 * nRows)
+train <- sample(seq_len(nRows), size = smp_size)
+test <- -train
+
+# use the same train and test spit as above
+AAPLData2_train <- AAPLData2[train,] 
+AAPLData2_test <- AAPLData2[test,]
+```
+
+Training Logistic Regression classifier
+```{r}
+logisticModel <- glm(isReturnPositive ~.,family=binomial(link='logit'),data=AAPLData2_train)
+summary(logisticModel)
+```
+```{r}
+# Analyzing training set classification accuracy
+
+# calculate fitted probabilities
+train_pred_prob <- predict(logisticModel, newdata = AAPLData2_train, type='response')
+
+# classify returns as postive or not
+train_pred <- ifelse(train_pred_prob > 0.5,1,0)
+
+# training set accuracy
+logisticModel_train_accuracy <- 100*mean(train_pred == AAPLData2_train$isReturnPositive)
+
+logisticModel_train_accuracy
+```
+```{r}
+# Analyzing test set classification accuracy
+
+# calculate fitted probabilities
+test_pred_prob <- predict(logisticModel, newdata = AAPLData2_test, type='response')
+
+# classify returns as postive or not
+test_pred <- ifelse(test_pred_prob > 0.5,TRUE,FALSE)
+
+# test set accuracy
+logisticModel_test_accuracy <- 100*mean(test_pred == AAPLData2_test$isReturnPositive)
+
+logisticModel_test_accuracy
+```
+The logisitic regression model above clearly overfits the data, with training set accuracy being 100% while test set accuracy being just 61%. This is not surprising as we have only 32 data points and 12 features.
+
+We try Support Vector Machine algorithm next. We will only use Linear Kernel as any complex kernel will make the overfitting problem more likely to reoccur.
+```{r}
+# Setting up SVM Model
+AAPLData3<- cbind(AAPLData1, 
+isReturnPositive = sapply(AAPLData1$quarterlyReturn, function(x) as.factor(x>0)))  
+
+AAPLData3 <- select(AAPLData3,-quarterlyReturn)
+
+AAPLData3_train <- AAPLData3[train,] 
+AAPLData3_test <- AAPLData3[test,]
+```
+Training SVM classifier with Linear Kernel
+```{r}
+# setting trainControl() which species resampling method as repeated cross validation, 
+# sets no of folds of cross validation as 10
+# the cross validation is repeated 3 times
+library('caret')
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+svmLinear <- train(isReturnPositive ~., data = AAPLData3_train, method = "svmLinear",
+                    trControl=trctrl,
+                    preProcess = c("center", "scale"),
+                    tuneLength = 10)
+svmLinear
+```
+Analysing training set accuracy with SVM
+```{r}
+train_pred <- predict(svmLinear, newdata = AAPLData3_train)
+
+confusionMatrix(train_pred, AAPLData3_train$isReturnPositive)
+confusionMatrix
+```
+Analysing test set accuracy with SVM
+```{r}
+# test set accuracy
+test_pred <- predict(svmLinear, newdata = AAPLData3_test)
+
+confusionMatrix(test_pred, AAPLData3_test$isReturnPositive)
+confusionMatrix
+```
+The training set accuracy is 83% while the test set accuracy is 69%. This model generalizes much better and therefore SVM with linear kernal is our preferrend model.
+
+We next try to tune parameter C which is a regularization parameter, with lower values of C likely reducing overfitting but also making the model prone to underfitting. In the previous model C was set to 1. We use the grid search method to find the value of C that maximises our cross validation accuracy.
+```{r}
+# Tuning parameter C
+grid <- expand.grid(C = c(0,0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5))
+svmLinearGrid <- train(isReturnPositive ~., data = AAPLData3_train, method = "svmLinear",
+                           trControl=trctrl,
+                           preProcess = c("center", "scale"),
+                           tuneGrid = grid,
+                           tuneLength = 10)
+svmLinearGrid
+plot(svmLinearGrid)
+```
+
+
+
+Lets see if tuned the paramter C value of 0.01 has increased our test accuracy or not.
+```{r}
+test_pred_grid <- predict(svmLinearGrid, newdata = AAPLData3_test)
+confusionMatrix(test_pred_grid, AAPLData3_test$isReturnPositive)
+```
+Our test set accuracy had infact reduced to around 61.5% from 69%. Indicating that this value of C might have infact led to underfitting of the model. Lets look at our training set accuracy to check if this is the case.
+```{r}
+train_pred_grid <- predict(svmLinearGrid, newdata = AAPLData3_train)
+confusionMatrix(train_pred_grid, AAPLData3_train$isReturnPositive)
+```
+Our training set accuracy reduced from 83% to 72%, making the case for underfitting for this tuned value of C. We therefore conclude that the SVM model with linear kernel and C = 1 is the best classification model.
+
+We did this analysis for just one stock and showed the significance of growth and value fundamental factors in predicting quarterly returns. We next define a smart beta strategy based on our analysis. The intuition is based on changing the above mentioned classification problem from predicting absolute stock outperformance to predicting the relative stock outperformance to an index. 
+
+Predicting outperforming stocks in an index in the following quarter of the fundamental data release will involve collecting the quarterly fundamental data for the factors we have used in our analysis for all the constituent stocks of the index and then performing the following steps,
+
+1) Calculating average factor values across all the index components
+2) Adding certain factors reflecting relative value of these fundamental factors of a stock as compared to the index, we propose calculating the ratio (stock specific factor value/average index factor value) for all the above factors
+3) Changing the classification label to indicate relative outperformance to index, 1 if stock will outperform the index, 0 if stock will underperform the index.
+
+Our hope is that SVM with a linear kernel should work for this classification problem too.
+
+Unfortunately we don't have any returns, risk or sharpe ratio metrics to report our performance, though we sucessfully suggest a novel smart beta model that attempts to take a purely value based fundamental approach to quarterly investing. 
+
+
+
+## Question 3
+Predicting FX Markets 
+
+We propose modelling the relationship between a basket of currencies correlated with oil prices namely AUDUSD, NZDUSD, USDMXN and USDCAD, Oil prices and DXY. We use DXY as a factor in addition to the oil prices as we need a proxy for relative strength of the dollar as all these currency pairs are denominated in dollars. The idea was that using a multi-factor model with any one of them as a predictor, and regressing against the others could lead to a statistically significant model for prediction. In theory we could have modelled just a pair of these currency pairs against each other too for eg. from inital analysis I found a strong negative correlation of -0.87 between AUDUSD and USDCAD which could be modelled as a pairs trading strategy, but we believe that using a multi factor relative value model should lead to better fit as well as stronger signal for trading. If the regression residuals of the proposed model are stationary, we can further do relative value trading based on the mean reversion of the residuals. 
+
+Data: We use Quandl Api to get prices starting from 2017-01-01 for AUDUSD, NZDUSD, USDMXN, USDCAD and WTI Crude Oil prices from FRED database. For DXY we have used data from yahoo finance pulled using getSymbols method in library quantmod.
+
+Proposed Model: 
+
+log(AUDUSD_t) ~ beta0 + beta1(log(NZDUSD_t)) + beta2(log(USDMXN_t)) + beta3(log(USDCAD_t)) + beta4*log(Oilprice_t) + beta5(DXY_t) + epsilon_t 
+
+Trading Model:
+
+If we take the first order differencing of the above model we get,
+
+epsilon_t - epsilon_t-1 = log(AUDUSD_t/AUDUSD_t-1) - {beta0 + beta1(log(NZDUSD_t/NZDUSD_t-1)) + beta2(log(USDMXN_t/USDMXN_t-1)) + beta3(log(USDCAD_t/USDCAD_t-1)) + beta4(log(Oilprice_t/Oilprice_t-1)) + beta5log((DXY_t/DXY_t-1))}, where x_t denotes x(t)
+
+For simiplicity, lets call everything within {} as a 'basket'.
+
+Each log term above just represents the return on each of the assets and the financial interpretation of the above model follows as: A portfolio that is long 1 dollar of AUDUSD and short the basket (where short the basket involves shorting beta1 dollar of NZDUSD, beta3 dollar of USDCAD, beta4 barrels of Oil and beta5 units of DXY) will have profit in dollars equal to the order 1 lag of our model error. So our trading signal will be as follows:
+
+If epsilon_t > threshold, Short 1 dollar of AUDUSD and Long the basket
+If epsilon_t < -threshold, Long  1 dollar of AUDSUD and Short the basket
+
+```{r}
+library(Quandl)
+library(quantmod)
+# Getting historical price data from 2017-01-01 to present
+Quandl.api_key("HD_sSceQtLjyiEa9LCJM")
+AUDUSD <- Quandl("FRED/DEXUSAL", type="xts", start_date='2017-01-01')
+NZDUSD <- Quandl("FRED/DEXUSNZ", type="xts", start_date='2017-01-01')
+USDMXN <- Quandl("FRED/DEXMXUS", type="xts", start_date='2017-01-01')
+USDCAD <- Quandl("FRED/DEXCAUS", type="xts", start_date='2017-01-01')
+Oil <- Quandl("FRED/DCOILWTICO", type="xts", start_date='2017-01-01')
+getSymbols("DXY",src="yahoo", startDate = '2017-01-01')
+```
+
+ Propposed Model:
+```{r}
+# log normalization of the price data
+AUDUSDFactors <- na.omit((merge(AUDUSD,NZDUSD,USDMXN,USDCAD,Oil,DXY$DXY.Close)))
+
+AUDUSDFactorModel <- lm(AUDUSD ~ .,data=log(AUDUSDFactors))
+summary(AUDUSDFactorModel)
+```
+The proposed model seems to fit the data well with an adjusted R squared of 0.8642 and all the chosen variables being significant in our model. NZDUSD, USDMXN, USDCAD and Oil at 99.9% confidence level and DXY at 95% confidence level. 
+
+We started with using Johanssen test which aims to find a linear combination of the factors that is cointegrated. It basically performs eigen value decomposition of the factor matrix and provides factor loadings that produce a stationary times series explaining the maximum possible variance in the data. Cointegration is a more reliable measure of mean reversion vs correlation in time series analysis and therefore try to see is these loadings from Johanssen Test can be used by us.
+```{r}
+library(urca)
+JOTest=ca.jo(AUDUSDFactors, type="trace", K=2, ecdet="none", spec="longrun")
+summary(JOTest)
+```
+The test statistic values for Johanssen test imply we cannot reject the r<=1 hypothesis at any confidence level, not providing strong support to our analysis. We try the Augmented Dickey Fuller test next.
+```{r}
+library('tseries')
+adf.test(AUDUSDFactorModel$residuals)
+plot(AUDUSDFactorModel$residuals)
+```
+
+
+
+ADF test statistic is a large negative value implying that the regression residuals of our model is stationary. We trading strategy specifications are described below:
+
+1) Long the spread: Goes Long 1 dollar worth of AUDUSD and shorts the basket described in the initial model description with the betas now being simply our regression coefficents when spread less than -1.5 standard deviations from the mean (which is 0)
+
+2) Short the spread: Goes Short 1 dollar worth of AUDUSD and shorts the basket described in the initial model description with the betas now being simply our regression coefficents when spread greater than 1.5 standard deviations from the mean (which is 0)
+
+3) We also implement stop losses at levels 2.5 standard deviations on either side. So if we are long the spread and spread becomes less than -2.5 standard deviations or moves further away from the mean rather than mean reverting we close the trade to prevent further losses. This happens when are are short the spread and spread becomes greater than 2.5 standard deviations.
+
+4) We use a training period of 60 days to estimate our regression model and use the estimated parameters for trading in the next 30 days. We use a rolling window method for the same. In our data starting from 2017-01-01 we had 7 such test periods which will help us evaluate the performance of our trading strategy.
+
+5) At any points in time there can only be 1 active trade and any open position is closed at the end of the test period window.
+```{r}
+# function that implements the trading strategy
+tradeSignal <- function(data, coeff, spread){
+  
+  N <- nrow(testData)
+  sdev <-sd(spread)
+  zeroprices <- rep(0,ncol(data))
+  factorCoeff <- coeff[2:length(coeff)]
+  prices <- list()
+  exposures <- list()
+  costOfTrade <- vector(mode="numeric", length=0)
+  returns <- list()
+  spreadPosition <- 'no'   
+  countTrades <- 0
+  
+  for (i in 1:N) {
+    
+    basespreadprices <- c(-1,1,1,1,1,1)
+    if(spreadPosition == 'no') {
+      
+      if(spread[i] > 1.5*sdev){
+        # go short the spread
+        cat("Going short the spread at index level", i, " and spread level ", spread[i], "\n")
+        countTrades <- countTrades + 1
+        prices[[countTrades]] <- data[i,] 
+        exposures[[countTrades]] <- c(1,-factorCoeff) * c(1/coredata(data[i,'AUDUSD']),1/coredata(data[i,'NZDUSD']),1,1,1,1)
+        costOfTrade[countTrades] <- abs(sum(c(1,-factorCoeff)*c(1,1,1,1,coredata(data[i,'Oil']),coredata(data[i,'DXY.Close']))))
+        spreadPosition <- 'short'
+      }
+      else if(spread[i] < -1.5*sdev){
+        # go long the spread
+        cat("Going long the spread at index level", i, " and spread level ", spread[i], "\n")
+        countTrades <- countTrades + 1
+        prices[[countTrades]] <- data[i,] 
+        exposures[[countTrades]] <- c(1,-factorCoeff) * c(1/coredata(data[i,'AUDUSD']),1/coredata(data[i,'NZDUSD']),1,1,1,1)
+        costOfTrade[countTrades] <- abs(sum(c(1,-factorCoeff)*c(1,1,1,1,coredata(data[i,'Oil']),coredata(data[i,'DXY.Close']))))
+        spreadPosition <- 'long'
+      }
+      
+      next
+    }
+    
+    if(spreadPosition == 'short') {
+      
+      if(spread[i] <= 0.1*sdev){
+        # close the spreadPosition 
+        cat("Closing long spreadPosition at index level", i, " and spread level ", spread[i], "\n")
+        returns[[countTrades]] <- exposures[[countTrades]]*(coredata(prices[[countTrades]]) - coredata(data[i,]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1) 
+        spreadPosition <- 'no'
+      }
+      else if(spread[i] > 2.5*sdev){
+        # stop loss
+        cat("Stop Loss Trigger: closing long spreadPosition at index level", i, " and spread level ", spread[i], "\n")
+        returns[[countTrades]] <- exposures[[countTrades]]*(coredata(prices[[countTrades]]) - coredata(data[i,]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1)
+        spreadPosition <- 'no'
+      }
+      
+      next
+    }
+    
+    
+    if(spreadPosition == 'long') {
+      
+      if(spread[i] >= -0.1*sdev){
+        # close the spreadPosition 
+        cat("Closing long spreadPosition at index level", i, " and spread level ", spread[i], "\n")
+        returns[[countTrades]] <- exposures[[countTrades]]*(coredata(data[i,]) - coredata(prices[[countTrades]]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1)
+        spreadPosition <- 'no'
+        
+      }
+      else if(spread[i] < -2.5*sdev){
+        # stop loss
+        cat("Stop Loss Trigger: closing long spreadPosition at index level", i, " and spread level ", spread[i], "\n")
+        returns[[countTrades]] <- exposures[[countTrades]]*(coredata(data[i,]) - coredata(prices[[countTrades]]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1)
+        spreadPosition <- 'no'
+      }
+      
+      next
+    }
+  }
+  
+  # close any open spreadprices on the last day of the test period
+  if(spreadPosition != 'close') {
+    cat("End of Trading Period: Closing open spreadPosition at index level", i, " and spread level ", spread[i], "\n")
+    if(spreadPosition == "long") returns[[countTrades]] <- exposures[[countTrades]]*(coredata(data[N,]) - coredata(prices[[countTrades]]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1)
+    else returns[[countTrades]] <- exposures[[countTrades]]*(coredata(prices[[countTrades]]) - coredata(data[N,]))*c(1,1,1/coredata(data[i,'USDMXN']),1/coredata(data[i,'USDCAD']),1,1)
+  }
+  
+  allReturns <- do.call(rbind, returns)
+  returnsTrades <- apply(allReturns,1,sum)/costOfTrade
+  return(100*((prod(sapply(returnsTrades,function(x) (1+x)))) - 1))
+
+}
+```
+
+
+Trading signals generated from the trading strategy as described above in the first 30 day test period are shown below. It is clear that we are able to bet on spread mean reversion correctly.
+```{r}
+i <- 0
+train <- 60
+test <- 30
+noOfSamples<-nrow(AUDUSDFactors)		#NO OF DATA POINTS
+noOfPeriods<-floor((noOfSamples-train)/test)
+trainData <- AUDUSDFactors[(1 + i*test) : (train + i*test),]
+# log scaling is necessary to interpret spread reversion as returns
+linearModel <- lm(AUDUSD ~ .,data = log(trainData)) 
+testData <- AUDUSDFactors[(train + i*test + 1) : (train + test + test*i),]
+meanRevertingspread <- apply(log(testData)*
+                                 c(1,-linearModel$coefficients[2:length(linearModel$coefficients)]) - linearModel$coefficients[1],1,sum)
+ returns <- tradeSignal(testData, linearModel$coefficients, meanRevertingspread)
+```
+```{r}
+returns
+```
+
+We see that our first test period generates return of 8.19% validating the profitability of the trading strategy based on reversion.
+
+When we plot our estimated residuals for this period based on the estimated regression coefficents from the past 60 days training data, we realize that our profitability is because of the stationarity of these residuals which is accurately captured in our trading signals above.
+```{r}
+plot(meanRevertingspread)
+```
+
+
+
+Let report our model performance for all 7 test periods
+```{r}
+rain <- 60
+test <- 30
+noOfSamples<-nrow(AUDUSDFactors)		#NO OF DATA POINTS
+noOfPeriods<-floor((noOfSamples-train)/test)
+
+osReturns <- vector(mode="numeric", length=0)
+
+for( i in 0:(noOfPeriods-1) ) {
+  cat("Starting backtesting period ", i+1, "\n")
+  trainData <- AUDUSDFactors[(1 + i*test) : (train + i*test),]
+  # log scaling is necessary to interpret spread reversion as returns
+  linearModel <- lm(AUDUSD ~ .,data = log(trainData)) 
+  testData <- AUDUSDFactors[(train + i*test + 1) : (train + test + test*i),]
+  meanRevertingspread <- apply(log(testData)*
+                                 c(1,-linearModel$coefficients[2:length(linearModel$coefficients)]) - linearModel$coefficients[1],
+                               1,sum)
+  osReturns[i+1] <- tradeSignal(testData, linearModel$coefficients, meanRevertingspread)
+}
+```
+Test period returns
+```{r}
+osReturns
+```
+As we can see out our trading strategy is profitable in only 3 out of the 7 test period returns. Lets calculate the sharpe ratio of our analysis.
+```{r}
+# annual share ratio: sqrt(12) as our test set returns are monthly
+sqrt(12)*mean(osReturns)/sd(osReturns)
+```
+We do come up with a trading strategy exploiting the stationarity of the regression residuals but also realize that this strategy is not always profitable. I am proposing a couple of ideas to make to more it profitable:
+
+1) One could try to model the spread using an OU mean reverting process and try to estimate the half life of mean reversion, the test period can then be chosen allowing for enough time for reversion
+2) Instead of keeping the estimated regression coefficents in the model constant, use a rolling regression or kalman filter model. We think that Kalman filtering will be more useful at it is quicker to absorb any new information.  
